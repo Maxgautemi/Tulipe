@@ -1,0 +1,173 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <TM1637Display.h>
+#include <SoftwareSerial.h>
+#include "DFRobotDFPlayerMini.h"
+
+// Définition des broches pour le SuperMini
+// CLK -> Pin physique 8 (GPIO 8)
+// DIO -> Pin physique 9 (GPIO 9)
+#define CLK 3
+#define DIO 2
+
+#define SDA_PIN 8
+#define SCL_PIN 9
+// DFPlayer Pins
+#define DF_RX 7 
+#define DF_TX 6
+
+#define PCF_ADDR 0x20
+#define Tulipe_Code 1590
+
+// Audio (appelations fichier : 0001.mp3, 0002.mp3, etc.mp3)
+#define BEEP 1
+#define WIN  2
+#define FAIL 3
+#define TICK 4
+
+unsigned long Tulipe_C_Finish[4] = {0,0,0,0};
+unsigned long compteur = 0;
+
+unsigned long Secondes = 30;
+unsigned long Minutes = 0;
+
+unsigned long Last_millis = 0;
+
+// Initialisation de l'afficheur
+TM1637Display display(CLK, DIO);
+
+SoftwareSerial dfSerial(DF_RX, DF_TX);
+DFRobotDFPlayerMini myDFPlayer;
+
+// TABLEAU CORRIGÉ : Miroir de haut en bas
+// On inverse l'ordre des lignes du tableau original
+const char keys[4][4] = {
+  {'D','#','0','*'}, // Ancienne ligne 4 devient ligne 1
+  {'C','9','8','7'}, // Ancienne ligne 3 devient ligne 2
+  {'B','6','5','4'}, // Ancienne ligne 2 devient ligne 3
+  {'A','3','2','1'}  // Ancienne ligne 1 devient ligne 4
+};
+
+
+void MIN_Sec(){
+  if (millis() - Last_millis >= 1000){
+    Last_millis = millis();
+
+    // Si le temps est déjà à zéro, on ne fait rien
+    if (Minutes == 0 && Secondes == 0) return;
+
+    // Tick toutes les secondes
+    // myDFPlayer.play(TICK);
+
+    if (Secondes == 0) {
+      if (Minutes > 0) {
+        Secondes = 59;
+        Minutes--;
+      }
+    } else {
+      Secondes--;
+    }
+    
+    // Mise à jour de l'affichage seulement quand le temps change
+    display.showNumberDecEx(Minutes * 100 + Secondes,0x40, true); 
+  }
+}
+
+char readKeypad() {
+  for (int i = 0; i < 4; i++) {
+    // Balayage des lignes (P4-P7)
+    uint8_t output = ~(1 << (i + 4)) | 0x0F; 
+    
+    Wire.beginTransmission(PCF_ADDR);
+    Wire.write(output);
+    if (Wire.endTransmission() != 0) return '\0';
+
+    Wire.requestFrom(PCF_ADDR, (uint8_t)1);
+    if (Wire.available()) {
+      uint8_t data = Wire.read();
+      uint8_t colData = data & 0x0F; // Lecture colonnes (P0-P3)
+
+      if (colData != 0x0F) { 
+        for (int j = 0; j < 4; j++) {
+          if (!(colData & (1 << j))) {
+            delay(50); // Anti-rebond plus réactif
+            return keys[i][j];
+          }
+        }
+      }
+    }
+  }
+  return '\0';
+}
+
+void setup() {
+  Serial.begin(115200);
+  dfSerial.begin(9600);
+
+  while(!Serial && millis() < 3000); 
+
+  // Initialisation du port série pour le debug
+  Serial.begin(115200);
+  Serial.println("Démarrage de l'afficheur...");
+
+  // Réglage de la luminosité (0x00 à 0x0f)
+  display.setBrightness(0x0a);
+  display.clear();
+  Serial.println("Afficheur initialisé.");
+  
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Serial.println("Clavier initialise : Mode Miroir Vertical");
+
+  Serial.println(F("Initializing DFPlayer..."));
+  if (!myDFPlayer.begin(dfSerial)) {
+    Serial.println(F("DFPlayer error! Check SD/Wiring."));
+  } else {
+    myDFPlayer.volume(25); // Volume 0-30
+    Serial.println(F("DFPlayer Ready."));
+  }
+}
+
+void loop() {
+  
+  char key = readKeypad();
+  if (key != '\0') {
+    Serial.print("Touche detectee : ");
+    Serial.println(key);
+    myDFPlayer.play(BEEP); // Beep à chaque pression de touche
+    
+    Tulipe_C_Finish[compteur] = key - '0';
+    compteur++;
+    Serial.println(Tulipe_C_Finish[compteur-1]);
+    display.showNumberDec(Tulipe_C_Finish[0]*1000 + Tulipe_C_Finish[1]*100 + Tulipe_C_Finish[2]*10 + Tulipe_C_Finish[3]);
+
+    // Attente du relâchement pour éviter la répétition infinie
+    while(readKeypad() != '\0') { delay(10); }
+  }
+  else{
+  MIN_Sec();
+  if (Minutes <= 0 && Secondes <= 0){
+    Serial.println("Temps ecoule !");
+    myDFPlayer.play(FAIL); // son de fin
+    exit(0);
+  }
+  delay(20);
+  }
+  if (compteur >= 4){
+    unsigned long enteredCode = Tulipe_C_Finish[0]*1000 + Tulipe_C_Finish[1]*100 + Tulipe_C_Finish[2]*10 + Tulipe_C_Finish[3];
+    if (enteredCode == Tulipe_Code){
+      Serial.println("Code correct ! Gagne.");
+      myDFPlayer.play(WIN); // son de victoire
+      delay(2000);
+      exit(0);
+    }else{
+      Serial.println("Code incorrect ! Recommencez.");
+      myDFPlayer.play(FAIL); // son d'échec du code
+      compteur = 0;
+      Tulipe_C_Finish[0] = 0;
+      Tulipe_C_Finish[1] = 0;
+      Tulipe_C_Finish[2] = 0;
+      Tulipe_C_Finish[3] = 0;
+      display.showNumberDec(0000);
+    }
+  }
+}
